@@ -1,88 +1,273 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <title>Lector de Código de Barras</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  
-  <!-- Manifest para PWA -->
-  <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#2e7d32">
-  
-  <!-- ZXing -->
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lector Barcode - Mejorado</title>
+
+  <!-- ZXing library -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
 
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      text-align: center;
-      padding: 20px;
-      background: #f7f7f7;
-    }
-    video {
-      width: 100%;
-      max-width: 400px;
-      border: 2px solid #333;
-      border-radius: 10px;
-      margin-top: 20px;
-    }
-    #result {
-      margin-top: 20px;
-      font-size: 20px;
-      font-weight: bold;
-      color: darkgreen;
-    }
-    button {
-      margin-top: 15px;
-      padding: 10px 20px;
-      font-size: 16px;
-      background: #2e7d32;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-    }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin: 16px; text-align: center; color: #111; }
+    h1 { font-size: 18px; margin-bottom: 8px; }
+    #video { width: 100%; max-width: 640px; border-radius: 8px; background: #000; }
+    #controls { margin-top: 8px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+    select, button { padding: 8px 10px; font-size: 14px; border-radius: 6px; border:1px solid #ccc; }
+    #result { margin-top: 12px; font-weight: 700; color: #1b5e20; }
+    #message { margin-top: 8px; color: #666; font-size: 13px; }
+    #thumb { margin-top: 12px; max-width:200px; border:1px solid #ddd; border-radius:6px; }
+    .badge { display:inline-block; padding:4px 8px; background:#e0f2f1; color:#00695c; border-radius:12px; font-size:12px; margin-left:6px; }
   </style>
 </head>
 <body>
-  <h2>📷 Escáner de Código de Barras</h2>
-  <video id="video"></video>
-  <p id="result">Esperando lectura...</p>
-  <button onclick="resetScanner()">Reiniciar Escáner</button>
+  <h1>📷 Lector de Códigos (mejorado)</h1>
+  <div>
+    <video id="video" playsinline autoplay muted></video>
+  </div>
+
+  <div id="controls">
+    <label>
+      Cámara:
+      <select id="videoSelect"></select>
+    </label>
+    <button id="btnRestart">Reiniciar</button>
+    <button id="btnCapture">Capturar manual</button>
+    <span class="badge" id="statusBadge">Esperando</span>
+  </div>
+
+  <div id="result">Resultado: <span id="codeValue">—</span></div>
+  <div id="message">Reglas: código normalizado (se eliminan guiones/espacios), debe tener <strong>12 caracteres</strong> y empezar con <strong>G</strong>. Se requieren 2 lecturas iguales para confirmar.</div>
+
+  <img id="thumb" alt="Foto capturada" style="display:none;"/>
 
   <script>
-    const codeReader = new ZXing.BrowserBarcodeReader();
-    const videoElement = document.getElementById('video');
-    let activeDeviceId = null;
+    // -- CONFIG
+    const WEBAPP_URL = "TU_URL_WEBAPP"; // <-- reemplaza con la URL de tu Apps Script (Web App)
+    const REQUIRED_CONFIRMATIONS = 2;   // cuantas veces iguales antes de aceptar (ajusta si quieres)
+    // -------------------
 
-    async function startScanner() {
+    const codeReader = new ZXing.BrowserBarcodeReader();
+    const videoElement = document.getElementById("video");
+    const videoSelect = document.getElementById("videoSelect");
+    const btnRestart = document.getElementById("btnRestart");
+    const btnCapture = document.getElementById("btnCapture");
+    const statusBadge = document.getElementById("statusBadge");
+    const codeValue = document.getElementById("codeValue");
+    const thumb = document.getElementById("thumb");
+
+    let lastDetected = null;
+    let lastCount = 0;
+    let currentStreamDeviceId = null;
+    let scanning = false;
+
+    // Normaliza el texto quitando guiones/espacios y pasando a mayúsculas
+    function normalizeCode(raw) {
+      if (!raw) return "";
+      return raw.replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+    }
+
+    // Valida: 12 caracteres y empieza con 'G'
+    function isValidCode(code) {
+      return /^[G][0-9A-Z]{11}$/.test(code);
+    }
+
+    // Captura un frame del video y devuelve dataURL
+    function capturePhotoDataURL() {
+      const canvas = document.createElement("canvas");
+      canvas.width = videoElement.videoWidth || 1280;
+      canvas.height = videoElement.videoHeight || 720;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL("image/png");
+    }
+
+    // Enviar datos al Web App (Google Apps Script)
+    async function sendToWebApp(code, photoDataUrl) {
+      if (!WEBAPP_URL || WEBAPP_URL.includes("TU_URL_WEBAPP")) {
+        console.warn("WEBAPP_URL no configurada. Cambia 'TU_URL_WEBAPP' por tu URL de Apps Script.");
+        statusBadge.innerText = "WebApp no configurada";
+        statusBadge.style.background = "#ffecb3";
+        return;
+      }
+      statusBadge.innerText = "Enviando...";
       try {
-        const devices = await codeReader.listVideoInputDevices();
-        if (devices.length > 0) {
-          activeDeviceId = devices[0].deviceId;
-          codeReader.decodeFromVideoDevice(activeDeviceId, 'video', (result, err) => {
-            if (result) {
-              document.getElementById('result').innerText = "Código detectado: " + result.text;
-            }
-          });
+        const resp = await fetch(WEBAPP_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codigo: code, foto: photoDataUrl })
+        });
+        if (resp.ok) {
+          statusBadge.innerText = "Enviado";
+          statusBadge.style.background = "#e8f5e9";
+        } else {
+          statusBadge.innerText = "Error envío";
+          console.error("Error al enviar:", resp.status, await resp.text());
         }
       } catch (err) {
-        console.error(err);
+        console.error("Fetch error:", err);
+        statusBadge.innerText = "Error envío";
       }
     }
 
-    function resetScanner() {
+    // Acepta el código confirmado: captura foto, muestra thumb y lo envia
+    function acceptCode(code) {
+      scanning = false;
       codeReader.reset();
-      document.getElementById('result').innerText = "Esperando lectura...";
-      startScanner();
+      codeValue.innerText = code;
+      statusBadge.innerText = "Confirmado";
+      statusBadge.style.background = "#e8f5e9";
+
+      // capturar foto
+      const foto = capturePhotoDataURL();
+      thumb.src = foto;
+      thumb.style.display = "block";
+
+      // enviar al WebApp
+      sendToWebApp(code, foto);
     }
 
-    startScanner();
+    // Manejo de resultados del lector
+    function handleResult(result) {
+      if (!result || !result.text) return;
+      const raw = result.text;
+      const normalized = normalizeCode(raw);
 
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("service-worker.js")
-        .then(() => console.log("Service Worker registrado"));
+      // Mostrar lectura en pantalla (no confirmada aún)
+      codeValue.innerText = normalized + " (raw: " + raw + ")";
+      statusBadge.innerText = "Lectura detectada";
+
+      if (!isValidCode(normalized)) {
+        statusBadge.innerText = "Lectura inválida";
+        statusBadge.style.background = "#ffebee";
+        lastDetected = null;
+        lastCount = 0;
+        return;
+      }
+
+      // Si es igual a la última detectada, aumentar contador
+      if (normalized === lastDetected) {
+        lastCount++;
+      } else {
+        lastDetected = normalized;
+        lastCount = 1;
+      }
+
+      // Si llega al umbral, aceptar
+      if (lastCount >= REQUIRED_CONFIRMATIONS) {
+        acceptCode(normalized);
+      } else {
+        statusBadge.innerText = "Confirmaciones: " + lastCount + "/" + REQUIRED_CONFIRMATIONS;
+        statusBadge.style.background = "#fff8e1";
+      }
     }
+
+    // Inicia el escáner en la cámara especificada (deviceId)
+    async function startScanner(deviceId = null) {
+      try {
+        statusBadge.innerText = "Iniciando cámara...";
+        statusBadge.style.background = "#fff";
+        lastDetected = null;
+        lastCount = 0;
+        thumb.style.display = "none";
+        codeValue.innerText = "—";
+        scanning = true;
+
+        // Si ya hay un stream corriendo, resetear
+        codeReader.reset();
+
+        // Preferir opciones de video de alta resolución si es posible
+        // decodeFromVideoDevice acepta deviceId o null y el id del elemento <video>
+        await codeReader.decodeFromVideoDevice(deviceId, "video", (result, err) => {
+          if (result) {
+            handleResult(result);
+          }
+          if (err && !(err instanceof ZXing.NotFoundException)) {
+            // sólo loggear errores distintos de "not found" (que son normales)
+            console.debug("ZXing err:", err);
+          }
+        });
+
+        statusBadge.innerText = "Listo para escanear";
+        statusBadge.style.background = "#e3f2fd";
+      } catch (e) {
+        console.error("startScanner error:", e);
+        statusBadge.innerText = "Error cámara";
+        statusBadge.style.background = "#ffcdd2";
+      }
+    }
+
+    // Lista cámaras disponibles y las muestra en el select
+    async function populateVideoDevices() {
+      try {
+        const devices = await codeReader.listVideoInputDevices();
+        videoSelect.innerHTML = "";
+        devices.forEach((d, i) => {
+          const opt = document.createElement("option");
+          opt.value = d.deviceId;
+          opt.text = d.label || ("Camera " + (i+1));
+          videoSelect.appendChild(opt);
+        });
+
+        // Si hay una cámara que parezca 'back' o 'rear', usarla por defecto
+        let preferred = devices.find(d => /back|rear|environment|env/gi.test(d.label));
+        if (!preferred && devices.length) preferred = devices[devices.length - 1];
+
+        if (preferred) {
+          currentStreamDeviceId = preferred.deviceId;
+          videoSelect.value = preferred.deviceId;
+        } else if (devices.length) {
+          currentStreamDeviceId = devices[0].deviceId;
+          videoSelect.value = devices[0].deviceId;
+        }
+
+        // iniciar con la cámara elegida
+        startScanner(currentStreamDeviceId);
+      } catch (err) {
+        console.error("populateVideoDevices:", err);
+        statusBadge.innerText = "No se pudo listar cámaras";
+        statusBadge.style.background = "#ffcdd2";
+      }
+    }
+
+    // Eventos UI
+    videoSelect.addEventListener("change", () => {
+      currentStreamDeviceId = videoSelect.value;
+      codeReader.reset();
+      startScanner(currentStreamDeviceId);
+    });
+
+    btnRestart.addEventListener("click", () => {
+      lastDetected = null;
+      lastCount = 0;
+      codeReader.reset();
+      startScanner(currentStreamDeviceId);
+    });
+
+    btnCapture.addEventListener("click", () => {
+      if (!scanning) {
+        // si no está escaneando, iniciar para capturar
+        startScanner(currentStreamDeviceId);
+        setTimeout(() => {
+          const foto = capturePhotoDataURL();
+          thumb.src = foto;
+          thumb.style.display = "block";
+        }, 900);
+      } else {
+        const foto = capturePhotoDataURL();
+        thumb.src = foto;
+        thumb.style.display = "block";
+        // Si ya hay un código confirmado, también podemos enviarlo manualmente:
+        const confirmed = lastDetected && lastCount >= REQUIRED_CONFIRMATIONS ? lastDetected : null;
+        if (confirmed) sendToWebApp(confirmed, foto);
+      }
+    });
+
+    // Al arrancar la página
+    (async () => {
+      // pedir permisos y poblar cámaras
+      await populateVideoDevices();
+    })();
   </script>
 </body>
 </html>
