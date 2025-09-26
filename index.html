@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Lector de Código de Barras</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Manifest para PWA -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#2e7d32">
+  
+  <!-- ZXing -->
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 20px;
+      background: #f7f7f7;
+    }
+    video {
+      width: 100%;
+      max-width: 400px;
+      border: 2px solid #333;
+      border-radius: 10px;
+      margin-top: 20px;
+    }
+    #result {
+      margin-top: 20px;
+      font-size: 20px;
+      font-weight: bold;
+      color: darkgreen;
+    }
+    button {
+      margin-top: 15px;
+      padding: 10px 20px;
+      font-size: 16px;
+      background: #2e7d32;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h2>📷 Escáner de Código de Barras</h2>
+  <video id="video"></video>
+  <p id="result">Esperando lectura...</p>
+  <button onclick="resetScanner()">Reiniciar Escáner</button>
+
+  <script>
+    const codeReader = new ZXing.BrowserBarcodeReader();
+    const videoElement = document.getElementById('video');
+    let activeDeviceId = null;
+
+    async function startScanner() {
+      try {
+        const devices = await codeReader.listVideoInputDevices();
+        if (devices.length > 0) {
+          activeDeviceId = devices[0].deviceId;
+          codeReader.decodeFromVideoDevice(activeDeviceId, 'video', (result, err) => {
+            if (result) {
+              document.getElementById('result').innerText = "Código detectado: " + result.text;
+            }
+          });
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function resetScanner() {
+      codeReader.reset();
+      document.getElementById('result').innerText = "Esperando lectura...";
+      startScanner();
+    }
+
+    startScanner();
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("service-worker.js")
+        .then(() => console.log("Service Worker registrado"));
+    }
+  </script>
+</body>
+</html>
