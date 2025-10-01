@@ -22,7 +22,7 @@
   .tagBtn{margin:6px;padding:8px 10px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}
   .tagBtn.selected{background:#e6f7ff;border-color:#0096ff}
   #thumb{max-width:260px;display:block;margin:10px auto;border:1px solid #ddd;border-radius:6px}
-  #status{margin-top:10px;text-align:center;color:#333}
+  #status{margin-top:10px;text-align:center;color:#333; word-break:break-word;}
 </style>
 </head>
 <body>
@@ -115,15 +115,31 @@ function captureAreaDataURL(){
   return canvas.toDataURL('image/jpeg',0.9);
 }
 
+function captureFullDataURL(){
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+  return canvas.toDataURL('image/jpeg',0.9);
+}
+
 async function sendToWebApp(payload){
   payload.token = SECRET_TOKEN;
   payload.parentFolderId = DRIVE_PARENT_ID;
   try{
-    const r = await fetch(WEBAPP_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const r = await fetch(WEBAPP_URL,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
     const text = await r.text();
-    console.log('webapp response:',text);
-    return JSON.parse(text);
-  }catch(e){ console.error(e); statusEl.innerText='Error envío'; return {ok:false,error:e.toString()}; }
+    let json;
+    try { json = JSON.parse(text); } catch(e){ json = {ok:false,error:"Invalid JSON", detail:text}; }
+    statusEl.innerText = 'Respuesta WebApp: ' + JSON.stringify(json);
+    return json;
+  }catch(e){
+    statusEl.innerText='Error envío: '+e;
+    return {ok:false,error:e.toString()};
+  }
 }
 
 // populate tags UI
@@ -170,33 +186,32 @@ function onResult(result){
   }
 }
 
+// start scanner
 async function startScanner(deviceId=null){
   statusEl.textContent='Iniciando cámara...';
   btnConfirm.disabled = true; btnManual.disabled = true;
   try{
     await codeReader.decodeFromConstraints({video:{facingMode:{ideal:'environment'}}},'video',(result,err)=>{ if(result) onResult(result); });
     statusEl.textContent='Escaneando...';
-  }catch(e){ console.error(e); statusEl.textContent='Error cámara'; }
+  }catch(e){ statusEl.textContent='Error cámara'; }
 }
 
-btnManual.addEventListener('click', ()=>{ confirmBox.style.display='block'; manualInput.focus(); });
-
+// confirm flow
 document.getElementById('confirmYes').addEventListener('click', async ()=>{
   const final = normalizeCode(manualInput.value||detectedCodeEl.textContent);
   if(!isValidCode(final)){ alert('Código inválido'); return; }
   currentCode = final;
   statusEl.textContent='Creando carpeta y subiendo etiqueta...';
   const photo = captureAreaDataURL();
-  console.log('Photo length:', photo.length);
   const resp = await sendToWebApp({action:'create_folder', code:currentCode, photo:photo});
-  if(resp.ok && resp.status==='folder_created'){
+  if(resp && resp.ok){
     statusEl.textContent='Carpeta creada: '+currentCode;
     confirmBox.style.display='none';
     accessories.style.display='block';
     photoCounter = 0;
   } else {
-    statusEl.textContent='Error creando carpeta: '+(resp.error||'unknown');
-    alert('No se pudo crear la carpeta. Revisa consola y permisos.');
+    statusEl.textContent='Error creando carpeta: '+(resp.error || JSON.stringify(resp));
+    alert('No se pudo crear la carpeta. Revisa Web App y token.');
   }
 });
 
@@ -208,13 +223,13 @@ btnTake.addEventListener('click', async ()=>{
   const data = captureFullDataURL();
   const filename = photoCounter + '.jpg';
   statusEl.textContent = 'Subiendo '+filename+' ('+selectedTag+')...';
-  const resp = await sendToWebApp({action:'upload_photo', code:currentCode, photo:data, filename:filename, tag:selectedTag});
-  if(resp.ok){ statusEl.textContent = filename + ' subida'; }
-  else { statusEl.textContent = 'Error subiendo: '+(resp.error||'unknown'); }
+  await sendToWebApp({action:'upload_photo', code:currentCode, photo:data, filename:filename, tag:selectedTag});
+  statusEl.textContent = filename + ' subida';
 });
 
 btnDone.addEventListener('click', ()=>{ accessories.style.display='none'; statusEl.textContent='Flujo finalizado'; });
 
+// initialize devices list and start
 async function listDevices(){
   try{
     const devices = await codeReader.listVideoInputDevices();
@@ -224,7 +239,10 @@ async function listDevices(){
       const preferred = devices.find(d=>/back|rear|environment/i.test(d.label)) || devices[devices.length-1];
       videoSelect.value = preferred.deviceId;
     }
-    videoSelect.addEventListener('change', ()=>{ codeReader.reset(); startScanner(videoSelect.value); });
+    videoSelect.addEventListener('change', ()=>{
+      codeReader.reset();
+      startScanner(videoSelect.value);
+    });
     await startScanner();
   }catch(e){ console.error(e); statusEl.textContent='No devices'; }
 }
