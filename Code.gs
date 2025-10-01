@@ -1,70 +1,66 @@
-/**
- * Apps Script Web App - recibe JSON con acciones:
- * - action: 'initial' -> crea carpeta y guarda foto inicial
- * - action: 'create_folder' -> crea carpeta con nombre del código y guarda foto
- * - action: 'upload_photo' -> guarda foto en la carpeta del código con etiqueta
- *
- * Configurar: PARENT_FOLDER_ID por defecto si no se envía en payload
- */
+const PARENT_FOLDER_ID = "1lhyyCwOxzA9Mr6jUFScDTsOrXBLM7RRp";
+const SECRET_TOKEN = "MiTokenUltraSeguro123";
 
-const PARENT_FOLDER_ID = "1lhyyCwOxzA9Mr6jUFScDTsOrXBLM7RRp"; // carpeta proporcionada
+function doGet(e) {
+  return ContentService
+    .createTextOutput(JSON.stringify({ok:false,message:"Este endpoint solo acepta POST con JSON"}))
+    .setMimeType(ContentService.MimeType.JSON);
+}
 
 function doPost(e) {
   try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return jsonOutput({ ok:false, error:"no_postdata" });
+    }
     var payload = JSON.parse(e.postData.contents);
+    if (payload.token !== SECRET_TOKEN) {
+      return jsonOutput({ ok:false, error:"unauthorized" });
+    }
+    var code = String(payload.code || "").toUpperCase().replace(/[^0-9A-Z]/g, "");
+    if (!code) return jsonOutput({ ok:false, error:"no_code" });
+    var parent = DriveApp.getFolderById(PARENT_FOLDER_ID);
+    var folder = getOrCreateFolder(parent, code);
+    if (payload.action === "create_folder") {
+      if (payload.photo) savePhotoDataUrl(folder, payload.photo, "etiqueta.jpg");
+      return jsonOutput({ ok:true, status:"folder_created", folderId: folder.getId() });
+    }
+    if (payload.action === "upload_photo") {
+      var filename = payload.filename || getNextSequentialName(folder);
+      if (payload.photo) savePhotoDataUrl(folder, payload.photo, filename);
+      return jsonOutput({ ok:true, status:"uploaded", filename: filename });
+    }
+    return jsonOutput({ ok:true, status:"noop" });
   } catch (err) {
-    return ContentService.createTextOutput("Invalid JSON").setMimeType(ContentService.MimeType.TEXT);
+    return jsonOutput({ ok:false, error:"exception", detail: err.toString() });
   }
+}
 
-  var action = payload.action || 'upload_photo';
-  var code = payload.code || payload.codigo || 'UNKNOWN';
-  var parentId = payload.parentFolderId || PARENT_FOLDER_ID;
-
-  // normalize code
-  code = String(code).toUpperCase().replace(/[^0-9A-Z]/g, "");
-
-  // ensure folder exists
-  var parent = DriveApp.getFolderById(parentId);
-  var folder = getOrCreateFolder(parent, code);
-
-  if (action === 'create_folder' || action === 'initial') {
-    if (payload.photo) {
-      savePhotoDataUrl(folder, payload.photo, code + '_initial.png');
-    }
-    return ContentService.createTextOutput("folder_created:" + folder.getId());
-  } else if (action === 'upload_photo') {
-    var tag = payload.tag || 'photo';
-    var name = code + "_" + tag + "_" + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMddHHmmss") + ".png";
-    if (payload.photo) {
-      savePhotoDataUrl(folder, payload.photo, name);
-      return ContentService.createTextOutput("uploaded:" + name);
-    } else {
-      return ContentService.createTextOutput("no_photo");
-    }
-  }
-
-  return ContentService.createTextOutput("ok");
+function jsonOutput(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
 function getOrCreateFolder(parent, name) {
   var folders = parent.getFoldersByName(name);
-  if (folders.hasNext()) return folders.next();
-  return parent.createFolder(name);
+  return folders.hasNext() ? folders.next() : parent.createFolder(name);
 }
 
 function savePhotoDataUrl(folder, dataUrl, filename) {
-  try {
-    var matches = dataUrl.match(/^data:(image\/(\w+));base64,(.*)$/);
-    if (!matches) {
-      var res = UrlFetchApp.fetch(dataUrl);
-      folder.createFile(res.getBlob()).setName(filename);
-      return;
-    }
-    var mime = matches[1];
-    var b64 = matches[3];
-    var blob = Utilities.newBlob(Utilities.base64Decode(b64), mime, filename);
+  var matches = dataUrl.match(/^data:(image\/[^;]+);base64,(.*)$/);
+  if (matches) {
+    var blob = Utilities.newBlob(Utilities.base64Decode(matches[2]), matches[1], filename);
     folder.createFile(blob);
-  } catch (e) {
-    Logger.log("savePhotoDataUrl error: " + e);
+    return;
   }
+  var res = UrlFetchApp.fetch(dataUrl);
+  folder.createFile(res.getBlob()).setName(filename);
+}
+
+function getNextSequentialName(folder) {
+  var files = folder.getFiles();
+  var max = 0;
+  while (files.hasNext()) {
+    var m = files.next().getName().match(/^(\d+)\.jpg$/);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return (max + 1) + ".jpg";
 }
